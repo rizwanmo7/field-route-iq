@@ -21,11 +21,9 @@ Pure TypeScript modules that implement the rules described in [`SPEC.md`](../SPE
 - Export named functions whose signatures correspond to sections of `SPEC.md`.
 - Are self-contained; the only cross-module dependency is that `settlement` imports the order pricer from `pricing`, because a route's totals are the sum of its priced orders.
 
-Per-module engineering briefs (interface, dependencies, and cross-references into `SPEC.md`):
-
-- [Pricing engine](modules/pricing.md) — `src/pricing/engine.ts`
-- [Shelf audit](modules/audit.md) — `src/audit/shelfAudit.ts`
-- [Route settlement](modules/settlement.md) — `src/settlement/settle.ts`
+Per-module engineering briefs are maintained under [`harness/`](../harness/) — they
+are used by the AI-agent rig (see [`AGENTS.md`](../AGENTS.md)) and inline the rules
+from `SPEC.md` for the three business modules.
 
 New business-logic modules should follow the same shape: a folder under `src/`, one or more pure functions, and named exports.
 

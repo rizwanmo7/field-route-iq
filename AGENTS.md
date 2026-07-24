@@ -1,28 +1,51 @@
 # AGENTS.md
 
-This repository follows the [AGENTS.md](https://agents.md) convention for AI coding agents.
+Entry point for AI coding agents working in this repository.
 
-## Getting oriented
+## Compliance with `RULES.md`
 
-Read these documents in order when starting work in this repository:
+This harness is designed to comply with the challenge rules:
 
-1. [`.github/copilot-instructions.md`](.github/copilot-instructions.md) — project overview, tech stack, repository layout, and code conventions.
-2. [`SPEC.md`](SPEC.md) — the canonical behavioral specification for business logic. Treat it as the source of truth.
-3. [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — layered architecture and module responsibilities.
-4. [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) — development workflow, how to add a feature, and the verification checklist.
-5. [`docs/modules/`](docs/modules/) — per-module engineering briefs. Skim the brief for the module you are implementing before reading its `SPEC.md` section.
+- **`SPEC.md` is the source of truth.** The `harness/brief-*.md` files are
+  distilled *from* `SPEC.md` (§2–§7 for pricing, §10 for audit, §11 for
+  settlement) — the strategy of distilling briefs is what Rule §"Strategy
+  hints" explicitly encourages. If a brief is silent or ambiguous, open
+  the matching `SPEC.md` section.
+- **No test-suite fishing.** The briefs and instructions are derived only
+  from `SPEC.md`; no hidden-test knowledge is encoded.
+- **The agent must not write or run tests** and must not score itself.
+  See the "Do not run" section in `.github/copilot-instructions.md`.
+- **Cumulative cost tracked in `COST.txt`** by `agent-run.mjs`. Do not
+  hand-edit it.
+- **Frozen files:** the agent may not modify `src/data/*.json`,
+  `src/legacy/**`, `docs/**`, `SPEC.md`, `RULES.md`, `AGENTS.md`, this
+  harness, or any config. Write scope is limited to `src/pricing/`,
+  `src/audit/`, `src/settlement/`.
 
-## Verification checklist
+## Read first
 
-Before finishing a change, run:
+1. `.github/copilot-instructions.md` — the rig: read path, wrong-files table, global rules.
+2. `harness/run-scope.md` — which module(s) to build this run.
+3. `harness/progress-notes.md` — what's already done.
+4. The brief for the module(s) in scope: `harness/brief-{pricing,audit,settlement}.md`.
+5. `src/data/index.ts` — loader signatures.
 
-- `npx tsc -p tsconfig.app.json --noEmit` — TypeScript type-check
-- `npm run build` — production build
-- `npm test` — existing test suite
+`SPEC.md` is the canonical authority; consult a specific section only when
+the matching brief does not cover your case. Do **not** open
+`src/legacy/**` or `docs/NOTES.md` — see the wrong-files table in
+`.github/copilot-instructions.md` for the specific rules each one gets
+wrong.
 
-## Scope discipline
+## Deliverables
 
-- Modify only the files necessary for the change you are making.
-- Do not add runtime dependencies, reconfigure the build, or introduce new tooling without discussion.
-- Do not write new tests unless the task explicitly calls for them; the existing test suite is intentionally minimal.
-- Do not modify `src/legacy/` — it is deprecated code kept only for historical reference.
+- `src/pricing/engine.ts` — `priceOrder(input): PricedOrder`
+- `src/audit/shelfAudit.ts` — `auditAccounts(asOf): AccountAudit[]`
+- `src/settlement/settle.ts` — `settleRoute(input): RouteSettlement`
+  (imports and reuses `priceOrder` from `../pricing/engine`)
+
+## Between runs
+
+The user steers by editing `harness/run-scope.md` (what to build next) and
+`harness/progress-notes.md` (what's done). The agent may append to
+`progress-notes.md` on completion; nothing else outside `src/pricing/`,
+`src/audit/`, `src/settlement/` may be modified.

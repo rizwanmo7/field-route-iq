@@ -1,4 +1,4 @@
-import { getAccounts, getVisits } from "../data/index"
+import { getAccounts, getVisits } from '../data'
 
 export interface AccountAudit {
   accountId: string
@@ -9,90 +9,68 @@ export interface AccountAudit {
   status: 'healthy' | 'watch' | 'critical' | 'unvisited'
 }
 
-function isIsoDate(s: string) {
-  return /^\d{4}-\d{2}-\d{2}$/.test(s)
+function round2(n: number): number {
+  const s = Math.sign(n) || 1
+  return s * Math.round(Math.abs(Number(n.toFixed(10))) * 100) / 100
 }
 
-// round2 same implementation as pricing (duplicate for isolation)
-function round2(x: number): number {
-  if (!Number.isFinite(x)) return x
-  const sign = x < 0 ? -1 : 1
-  const abs = Math.abs(x)
-  const s = abs.toFixed(12)
-  const [intPart, fracPart = ""] = s.split('.')
-  const f = (fracPart + "000").slice(0, 3)
-  const firstTwo = f.slice(0, 2)
-  const third = f[2]
-  let cents = Number(intPart) * 100 + Number(firstTwo)
-  if (Number(third) >= 5) cents += 1
-  const result = (cents / 100) * sign
-  return Number(result.toFixed(2))
+function daysBetween(fromIso: string, toIso: string): number {
+  const [fy, fm, fd] = fromIso.split('-').map(Number)
+  const [ty, tm, td] = toIso.split('-').map(Number)
+  const fromMs = Date.UTC(fy, fm - 1, fd)
+  const toMs = Date.UTC(ty, tm - 1, td)
+  return Math.round((toMs - fromMs) / 86_400_000)
 }
 
 export function auditAccounts(asOf: string): AccountAudit[] {
-  if (!isIsoDate(asOf)) throw new Error(`Invalid date: ${asOf}`)
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(asOf)) throw new Error(`Invalid date: ${asOf}`)
 
   const accounts = getAccounts()
   const visits = getVisits()
 
-  // Build map of visits per account, filtered date <= asOf
-  const visitsByAccount: Record<string, any[]> = {}
-  for (const v of visits) {
-    if (v.date > asOf) continue
-    if (!visitsByAccount[v.accountId]) visitsByAccount[v.accountId] = []
-    visitsByAccount[v.accountId].push(v)
-  }
+  const out: AccountAudit[] = accounts.map((acct) => {
+    const counted = visits
+      .filter((v) => v.accountId === acct.id && v.date <= asOf)
+      .sort((a, b) => {
+        if (a.date === b.date) return a.id < b.id ? 1 : a.id > b.id ? -1 : 0 // id desc
+        return a.date < b.date ? 1 : -1 // date desc
+      })
 
-  // For each account, compute audit
-  const result: AccountAudit[] = accounts.map((acc) => {
-    const accVisits = visitsByAccount[acc.id] || []
-    // sort by date desc, then id desc
-    accVisits.sort((a, b) => {
-      if (a.date !== b.date) return a.date < b.date ? 1 : -1
-      if (a.id !== b.id) return a.id < b.id ? 1 : -1
-      return 0
-    })
-
-    const counted = accVisits
-
+    // weighted score
     let weightedScore: number | null = null
     if (counted.length === 0) {
       weightedScore = null
     } else {
-      const take = counted.slice(0, 3)
+      const N = Math.min(counted.length, 3)
       const weights = [3, 2, 1]
       let numerator = 0
-      let denom = 0
-      for (let i = 0; i < take.length; i++) {
-        numerator += weights[i] * take[i].shelfScore
-        denom += weights[i]
+      let divisor = 0
+      for (let i = 0; i < N; i++) {
+        numerator += weights[i] * counted[i].shelfScore
+        divisor += weights[i]
       }
-      weightedScore = round2(numerator / denom)
+      weightedScore = round2(numerator / divisor)
     }
 
+    // trend
     let trend: 'up' | 'down' | 'flat' | null = null
-    if (counted.length >= 2) {
+    if (counted.length < 2) trend = null
+    else {
       const s1 = counted[0].shelfScore
       const s2 = counted[1].shelfScore
       if (s1 > s2) trend = 'up'
       else if (s1 < s2) trend = 'down'
       else trend = 'flat'
-    } else {
-      trend = null
     }
 
+    // recency
     let daysSinceVisit: number | null = null
     if (counted.length === 0) daysSinceVisit = null
-    else {
-      const latestDate = counted[0].date
-      const d1 = new Date(latestDate + 'T00:00:00')
-      const d2 = new Date(asOf + 'T00:00:00')
-      const diffMs = d2.getTime() - d1.getTime()
-      daysSinceVisit = Math.floor(diffMs / (24 * 60 * 60 * 1000))
-    }
+    else daysSinceVisit = daysBetween(counted[0].date, asOf)
 
     const overdue = daysSinceVisit === null || daysSinceVisit > 14
 
+    // status
     let status: 'healthy' | 'watch' | 'critical' | 'unvisited'
     if (counted.length === 0) status = 'unvisited'
     else if (weightedScore !== null && weightedScore < 2.5) status = 'critical'
@@ -100,7 +78,7 @@ export function auditAccounts(asOf: string): AccountAudit[] {
     else status = 'healthy'
 
     return {
-      accountId: acc.id,
+      accountId: acct.id,
       weightedScore,
       trend,
       daysSinceVisit,
@@ -109,7 +87,6 @@ export function auditAccounts(asOf: string): AccountAudit[] {
     }
   })
 
-  // sort by accountId ascending
-  result.sort((a, b) => (a.accountId < b.accountId ? -1 : a.accountId > b.accountId ? 1 : 0))
-  return result
+  out.sort((a, b) => (a.accountId < b.accountId ? -1 : a.accountId > b.accountId ? 1 : 0))
+  return out
 }

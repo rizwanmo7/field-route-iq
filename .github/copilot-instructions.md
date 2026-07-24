@@ -1,50 +1,129 @@
-# GitHub Copilot instructions
+# Copilot instructions — Field Operations Suite
 
-Repository-wide guidance for GitHub Copilot and other AI coding assistants working in this codebase.
+You are implementing three business-logic modules for this repo. Everything
+you need to write correct code is in **this file** and the three module
+briefs under `harness/`. Do not open the full spec unless a brief is silent
+on the exact case you're deciding.
 
-## About this project
+## Read only these — in this order — then write code
 
-Field Route IQ is a route-sales support tool used by field sales representatives to plan routes, place customer orders, audit shelves at store visits, and settle routes at end-of-day. It is a small single-page React + TypeScript application backed by a JSON fixture set for accounts, products, promotions, routes, and visits.
+1. **`harness/run-scope.md`** — which module(s) to build THIS run.
+2. **`harness/progress-notes.md`** — what's already done.
+3. The brief(s) for the module(s) named in run-scope:
+   - Pricing → `harness/brief-pricing.md`
+   - Shelf audit → `harness/brief-audit.md`
+   - Route settlement → `harness/brief-settlement.md`
+4. **`src/data/index.ts`** — the only allowed data-access surface (loader
+   signatures + shared types like `Promotion`, `Product`, `Account`,
+   `RouteDef`, `Visit`).
 
-The canonical behavioral specification for business logic is [`SPEC.md`](../SPEC.md). Treat it as the source of truth when its rules conflict with anything else in the repository (comments, legacy code, or historical design notes).
+Then write the module file(s) and stop. Do not read anything else.
 
-## Tech stack
+## Files that are WRONG — do not import from them, do not copy their rules
 
-- TypeScript with strict mode (`verbatimModuleSyntax` and `noUnusedLocals` are enabled).
-- React 18 + Vite for the UI shell.
-- Vitest for the (minimal) test scaffolding.
-- No runtime dependencies beyond React and its ecosystem.
+The repo intentionally ships historical / misleading material. Each file
+below **directly contradicts the correct behaviour** described by `SPEC.md`
+and the briefs. Do not import from them or use them as a reference:
 
-## Repository layout
+| File | Why it is wrong |
+|---|---|
+| `src/legacy/pricingV1.ts` | Uses banker's rounding (spec = half-up); treats `validTo` as exclusive (spec = inclusive); stacks every matching line promo cumulatively (spec = one line promo per line); grants at most one BOGO group per line (spec = repeat groups); ignores `eligibleSegments` (spec = enforce). All five rules are inverted. |
+| `src/legacy/discountMatrix.ts` | Fabricates a tier/uplift/SKU-override/grandfathered-flat-rate system that does not exist in the spec at all. |
+| `docs/NOTES.md` | Informal meeting notes with WRONG "consensus" on rounding, BOGO groups, threshold basis (gross vs net), `validTo` semantics, and segment gating. |
 
-- [`src/data/`](../src/data/) — typed data loaders and JSON fixtures. All read access flows through the loaders exported by [`src/data/index.ts`](../src/data/index.ts).
-- [`src/pricing/`](../src/pricing/) — order-pricing business logic.
-- [`src/audit/`](../src/audit/) — shelf-audit computations.
-- [`src/settlement/`](../src/settlement/) — end-of-day route settlement (depends on `pricing`).
-- [`src/pages/`](../src/pages/), [`src/state/`](../src/state/), [`src/App.tsx`](../src/App.tsx) — UI shell; business rules do not belong here.
-- [`src/legacy/`](../src/legacy/) — deprecated implementations retained for historical reference. Do not import from it in new code; `SPEC.md` supersedes any behavior encoded in these files.
-- [`docs/`](../docs/) — architecture documentation, contributing guide, and historical design notes.
+## Reference material — authoritative if a brief is genuinely silent
 
-## Working conventions
+`SPEC.md` is the canonical behavioural specification and the source of truth
+when it conflicts with anything else in the repo. The three briefs in
+`harness/` are **derived from `SPEC.md`** (§2–§7 for pricing, §10 for audit,
+§11 for settlement) and inline the exact rules that apply to each module.
 
-- Read [`SPEC.md`](../SPEC.md) when implementing or modifying business logic. It is the authoritative behavioral contract; reason from the spec, don't guess.
-- Use the loaders in [`src/data/index.ts`](../src/data/index.ts) for all data access. Do not import JSON files directly or add `fetch` calls for bundled data.
-- Business-logic modules under `src/pricing/`, `src/audit/`, and `src/settlement/` are pure and side-effect-free. React and I/O belong in the UI layer.
-- Use `import type { ... }` for type-only imports (required by `verbatimModuleSyntax`).
-- Prune unused imports and locals (`noUnusedLocals` is enabled — unused symbols are a compile error).
-- Prefer named exports over default exports.
-- Match existing formatting; do not add or reconfigure formatters/linters.
+**Read the matching brief first.** If it does not cover your specific case,
+open the relevant `SPEC.md` section directly — do not guess.
 
-## Verifying your work
+`docs/ARCHITECTURE.md` and `docs/CONTRIBUTING.md` are human-facing repo
+docs. They are not needed to implement the three modules; skip them by
+default.
 
-Run these locally before committing:
+## Deliverables
 
-- Type-check: `npx tsc -p tsconfig.app.json --noEmit`
-- Production build: `npm run build`
-- Existing tests: `npm test`
+Three files, each exporting exactly one function:
 
-## Further reading
+- `src/pricing/engine.ts` — `export function priceOrder(input: PriceOrderInput): PricedOrder`
+- `src/audit/shelfAudit.ts` — `export function auditAccounts(asOf: string): AccountAudit[]`
+- `src/settlement/settle.ts` — `export function settleRoute(input: SettleRouteInput): RouteSettlement`
 
-- [`docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md) — layered architecture and module responsibilities.
-- [`docs/CONTRIBUTING.md`](../docs/CONTRIBUTING.md) — development workflow and feature-addition checklist.
-- [`docs/modules/`](../docs/modules/) — per-module engineering briefs (interface, dependencies, and cross-references into `SPEC.md`).
+`settle.ts` **must** import and reuse `priceOrder`:
+
+```ts
+import { priceOrder } from '../pricing/engine'
+```
+
+Do not duplicate pricing logic in settlement. Settlement is judged through
+*your* `priceOrder`, so a pricing bug will fail settlement tests too.
+
+## Global rules that apply to all three modules
+
+- **Money rounding: half-up to 2 decimals, guarded against float artifacts.**
+  A naive `Math.round(x*100)/100` gives `2.17` for `2.175` because
+  `2.175 === 2.17499999…` in IEEE-754. The spec requires `2.18`. Use:
+
+  ```ts
+  function round2(n: number): number {
+    // toFixed(10) collapses the artefact (e.g. 2.17499… → "2.1750000000")
+    const s = Math.sign(n) || 1
+    return s * Math.round(Math.abs(Number(n.toFixed(10))) * 100) / 100
+  }
+  ```
+
+  Round every money output field: `gross`, `discount`, `net`, `subtotal`,
+  `total`, `orderLevel.discount`, all settlement totals, per-category, and
+  `commission`.
+
+- **Validity windows: BOTH endpoints inclusive.** A promotion is active when
+  `validFrom <= date && date <= validTo`, comparing ISO date strings
+  lexicographically. No time-of-day component.
+
+- **Data access only through `src/data/index.ts`** — no `import … from
+  '../data/*.json'`, no `fetch`, no reading fixture files directly.
+
+- **Pure functions.** No React, no I/O, no module-level mutable state, no
+  logging in the three business modules.
+
+- **`import type` for type-only imports.** `verbatimModuleSyntax` is on, so
+  a value-import of a type-only symbol is a compile error.
+
+- **`noUnusedLocals` is on.** Any unused import, parameter, or local is a
+  compile error. Remove them.
+
+- **Named exports only.** No `export default`.
+
+## Scope you may write to
+
+Write **only** these three files:
+
+- `src/pricing/engine.ts`
+- `src/audit/shelfAudit.ts`
+- `src/settlement/settle.ts`
+
+Do **not** touch anything else — no `src/data/`, no `src/pages/`, no
+`src/state/`, no `src/App.tsx`, no `src/legacy/`, no `docs/`, no
+`SPEC.md`, no `RULES.md`, no `AGENTS.md`, no `harness/`, no `.github/`,
+no config files, and **do not add any dependencies**.
+
+## Do not run
+
+Do not write tests. Do not run tests. Do not run the app. Do not "verify"
+your work — the harness runs `tsc --noEmit` automatically after you exit.
+
+## When to update progress-notes.md
+
+After you finish writing a module (or all of them), append a one-line entry
+to `harness/progress-notes.md`:
+
+```
+- <date>: <module> — done. <one-line summary of any decision worth
+  remembering next run>.
+```
+
+This is the only file outside `src/` you may modify.
