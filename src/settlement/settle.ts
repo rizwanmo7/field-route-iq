@@ -1,7 +1,10 @@
+import { getProduct, getRoutes } from '../data'
 import { priceOrder } from '../pricing/engine'
-import { getRoutes, getProduct } from '../data'
 
-export interface CartLine { productId: string; qty: number }
+export interface CartLine {
+  productId: string
+  qty: number
+}
 
 export interface SettleRouteInput {
   routeId: string
@@ -26,86 +29,98 @@ export interface RouteSettlement {
 
 function round2(n: number): number {
   const s = Math.sign(n) || 1
-  return s * Math.round(Math.abs(Number(n.toFixed(10))) * 100) / 100
+  return s * Math.round(Number((Math.abs(n) * 100).toFixed(10))) / 100
 }
 
 export function settleRoute(input: SettleRouteInput): RouteSettlement {
-  const routes = getRoutes()
-  const route = routes.find((r) => r.id === input.routeId)
-  if (!route) throw new Error(`Unknown route: ${input.routeId}`)
+  const route = getRoutes().find((candidate) => candidate.id === input.routeId)
+  if (!route) {
+    throw new Error(`Unknown route: ${input.routeId}`)
+  }
 
-  const stopAccountIds = route.stops.map((s) => s.accountId)
-
+  const stopAccountIds = route.stops.map((stop) => stop.accountId)
   for (const order of input.orders) {
     if (!stopAccountIds.includes(order.accountId)) {
       throw new Error(`Account not on route: ${order.accountId}`)
     }
   }
 
-  const priced = input.orders.map((o) =>
-    priceOrder({ lines: o.lines, accountId: o.accountId, date: input.date })
+  const pricedOrders = input.orders.map((order) =>
+    priceOrder({ lines: order.lines, accountId: order.accountId, date: input.date }),
   )
 
-  // Totals
-  const grossTotal = round2(priced.reduce((s, po) => s + po.lines.reduce((ss, l) => ss + l.gross, 0), 0))
-  const lineDiscountTotal = round2(priced.reduce((s, po) => s + po.lines.reduce((ss, l) => ss + l.discount, 0), 0))
-  const orderDiscountTotal = round2(priced.reduce((s, po) => s + po.orderLevel.discount, 0))
-  const discountTotal = round2(lineDiscountTotal + orderDiscountTotal)
-  const netTotal = round2(priced.reduce((s, po) => s + po.total, 0))
+  let grossSum = 0
+  let lineDiscountSum = 0
+  let orderDiscountSum = 0
+  let netSum = 0
 
-  // per-category nets
-  const catMap: Record<string, { total: number; count: number }> = {}
-  for (const po of priced) {
-    for (const l of po.lines) {
-      const prod = getProduct(l.productId)
-      const cat = prod ? prod.category : 'UNKNOWN'
-      if (!catMap[cat]) catMap[cat] = { total: 0, count: 0 }
-      catMap[cat].total += l.net
-      catMap[cat].count += 1
+  const perCategorySums: Record<string, number> = {}
+  const promoUsageCounts: Record<string, number> = {}
+
+  for (const pricedOrder of pricedOrders) {
+    orderDiscountSum += pricedOrder.orderLevel.discount
+    netSum += pricedOrder.total
+
+    if (pricedOrder.orderLevel.appliedPromoId) {
+      const promoId = pricedOrder.orderLevel.appliedPromoId
+      promoUsageCounts[promoId] = (promoUsageCounts[promoId] ?? 0) + 1
+    }
+
+    for (const line of pricedOrder.lines) {
+      grossSum += line.gross
+      lineDiscountSum += line.discount
+
+      if (line.appliedPromoId) {
+        const promoId = line.appliedPromoId
+        promoUsageCounts[promoId] = (promoUsageCounts[promoId] ?? 0) + 1
+      }
+
+      const product = getProduct(line.productId)
+      if (!product) {
+        throw new Error(`Unknown product: ${line.productId}`)
+      }
+      perCategorySums[product.category] = (perCategorySums[product.category] ?? 0) + line.net
     }
   }
+
+  const grossTotal = round2(grossSum)
+  const lineDiscountTotal = round2(lineDiscountSum)
+  const orderDiscountTotal = round2(orderDiscountSum)
+  const discountTotal = round2(lineDiscountTotal + orderDiscountTotal)
+  const netTotal = round2(netSum)
 
   const perCategory: Record<string, number> = {}
-  const catKeys = Object.keys(catMap).sort()
-  for (const k of catKeys) {
-    // include categories that had at least one line
-    perCategory[k] = round2(catMap[k].total)
+  const sortedCategories = Object.keys(perCategorySums).sort((a, b) => a.localeCompare(b))
+  for (const category of sortedCategories) {
+    perCategory[category] = round2(perCategorySums[category])
   }
 
-  // promo usage
-  const usageMap: Record<string, number> = {}
-  for (const po of priced) {
-    for (const l of po.lines) {
-      if (l.appliedPromoId) {
-        usageMap[l.appliedPromoId] = (usageMap[l.appliedPromoId] || 0) + 1
-      }
-    }
-    if (po.orderLevel && po.orderLevel.appliedPromoId) {
-      const id = po.orderLevel.appliedPromoId
-      usageMap[id] = (usageMap[id] || 0) + 1
-    }
-  }
   const promoUsage: Record<string, number> = {}
-  for (const k of Object.keys(usageMap).sort()) promoUsage[k] = usageMap[k]
+  const sortedPromoIds = Object.keys(promoUsageCounts).sort((a, b) => a.localeCompare(b))
+  for (const promoId of sortedPromoIds) {
+    promoUsage[promoId] = promoUsageCounts[promoId]
+  }
 
-  // commission (marginal)
   const t1 = Math.min(netTotal, 200) * 0.02
   const t2 = Math.max(0, Math.min(netTotal, 500) - 200) * 0.05
   const t3 = Math.max(0, netTotal - 500) * 0.08
   const commission = round2(t1 + t2 + t3)
 
-  // stops visited / missed
-  const seen = new Set<string>()
+  const orderedSeen = new Set<string>()
+  const visitedSet = new Set(input.orders.map((order) => order.accountId))
   const stopsVisited: string[] = []
   const stopsMissed: string[] = []
-  const orderedSeen = new Set<string>(input.orders.map((o) => o.accountId))
 
-  for (const s of route.stops) {
-    const aid = s.accountId
-    if (seen.has(aid)) continue
-    seen.add(aid)
-    if (orderedSeen.has(aid)) stopsVisited.push(aid)
-    else stopsMissed.push(aid)
+  for (const stop of route.stops) {
+    if (orderedSeen.has(stop.accountId)) {
+      continue
+    }
+    orderedSeen.add(stop.accountId)
+    if (visitedSet.has(stop.accountId)) {
+      stopsVisited.push(stop.accountId)
+    } else {
+      stopsMissed.push(stop.accountId)
+    }
   }
 
   return {
